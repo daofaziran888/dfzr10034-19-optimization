@@ -133,3 +133,77 @@ class ComplianceScanService(BaseModuleService):
 
     def get_violations(self) -> list[dict[str, Any]]:
         return [r for r in store.rows(self.MODULE) if r.get("status") == "存在违规"]
+
+    # ── 异常访问追溯联动：扫描待办与追溯命中保持一致 ─────────
+
+    def scan_audit_trace(self, trace_id: int) -> dict[str, Any]:
+        """按追溯会话的冻结命中明细生成扫描待办，重复扫描不产生重复待办。"""
+        from app.services.audit_trace import AuditTraceService
+
+        audit = AuditTraceService()
+        result = audit.get_trace_hits(trace_id, page=1, size=1_000_000)
+        session = audit._require_session(trace_id)
+        existing_refs = {
+            sc.get("trace_hit_ref")
+            for sc in store.rows(self.MODULE)
+            if sc.get("trace_id") == trace_id
+        }
+
+        todos: list[dict[str, Any]] = []
+        for hit in result["items"]:
+            ref = f"{trace_id}:{hit['日志id']}"
+            if ref in existing_refs:
+                continue
+            scan_id = store.next_id(self.MODULE)
+            basis = "；".join(item["依据"] for item in hit["分级依据"])
+            scan = {
+                "id": scan_id,
+                "任务编号": f"COMP-AUDIT-{scan_id:04d}",
+                "目标资产": hit["目标资产"],
+                "合规条款": "异常访问追溯",
+                "检查规则": "高敏字段下载访问时点分级核查",
+                "扫描范围": f"{session['开始时间']}~{session['结束时间']}",
+                "违规发现": (
+                    f"操作人{hit['操作人']}于{hit['操作时间']}下载高敏字段"
+                    f"{'、'.join(b['字段'] for b in hit['分级依据'])}"
+                ),
+                "修复意见": "逐笔核实访问授权与业务必要性，确认后闭环",
+                "扫描时间": _time.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "存在违规",
+                "pending": True,
+                "abnormal": True,
+                "triggered_by": "audit_trace",
+                "trace_id": trace_id,
+                "访问序号": hit["访问序号"],
+                "trace_hit_ref": ref,
+                "分级依据": basis,
+                "created_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            store.rows(self.MODULE).append(scan)
+            todos.append(scan)
+
+        session["扫描状态"] = "扫描完成"
+        store.set_pipeline_state(f"{AuditTraceService.SESSION_STATE_PREFIX}{trace_id}", session)
+        entry = store.find("audit_trace", trace_id)
+        if entry is not None:
+            entry["status"] = "扫描完成"
+            entry["扫描状态"] = "扫描完成"
+
+        trace_todos = [
+            sc for sc in store.rows(self.MODULE)
+            if sc.get("trace_id") == trace_id
+        ]
+        store.log_change(
+            self.MODULE, trace_id, "追溯扫描",
+            before=None,
+            after=f"命中{result['total']}笔，待办{len(trace_todos)}条，补报{result['supplement_count']}笔",
+            source="audit_trace", scope="compliance_scan",
+        )
+        return {
+            "trace_id": trace_id,
+            "hit_total": result["total"],
+            "new_todos": len(todos),
+            "todo_total": len(trace_todos),
+            "supplement_count": result["supplement_count"],
+            "todos": trace_todos,
+        }

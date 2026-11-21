@@ -244,6 +244,17 @@ export const MODULES: ModuleMeta[] = [
     actionTargets: {"确认指派": "已生效", "发起交接": "交接中", "标记过期": "已过期"},
     metrics: ["指派总数", "已生效指派", "交接中指派"],
   },
+  {
+    key: "audit_trace",
+    name: "异常访问追溯",
+    entity: "追溯会话",
+    desc: "按操作人、资产与发生时间从访问日志追溯异常下载，按访问发生时点的分级口径判定命中，冻结分页边界并与扫描待办保持一致。",
+    fields: ["追溯编号", "操作人", "目标资产", "开始时间", "结束时间", "扫描状态", "命中数", "补报数"],
+    statuses: ["追溯中", "扫描完成", "已关闭"],
+    actions: ["完成扫描", "关闭追溯"],
+    actionTargets: {"完成扫描": "扫描完成", "关闭追溯": "已关闭"},
+    metrics: ["追溯会话数", "命中总数", "补报访问数"],
+  },
 ]
 
 export const MODULE_BY_KEY: Map<string, ModuleMeta> = new Map(
